@@ -2716,3 +2716,20 @@ func TestLoadSimpleModeAutoCreateDefaultGroups(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateGeminiDisconnectDrain(t *testing.T) {
+	resetViperWithJWTSecret(t)
+	cfg, err := Load()
+	require.NoError(t, err)
+	require.False(t, cfg.Gateway.GeminiDisconnectDrainEnabled)
+	require.Zero(t, cfg.Gateway.GeminiDisconnectDrainTimeoutSeconds)
+
+	cfg.Gateway.GeminiDisconnectDrainEnabled = true
+	require.EqualError(t, cfg.Validate(), "gateway.gemini_disconnect_drain_timeout_seconds is required (1-600 seconds) when gateway.gemini_disconnect_drain_enabled is true")
+
+	cfg.Gateway.GeminiDisconnectDrainTimeoutSeconds = 601
+	require.EqualError(t, cfg.Validate(), "gateway.gemini_disconnect_drain_timeout_seconds must be between 0-600 seconds")
+
+	cfg.Gateway.GeminiDisconnectDrainTimeoutSeconds = 120
+	require.NoError(t, cfg.Validate())
+}

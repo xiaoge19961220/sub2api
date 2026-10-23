@@ -1008,6 +1008,10 @@ type GatewayConfig struct {
 	ProxyProbeResponseReadMaxBytes int64 `mapstructure:"proxy_probe_response_read_max_bytes"`
 	// Gemini 上游响应头调试日志开关（默认关闭，避免高频日志开销）
 	GeminiDebugResponseHeaders bool `mapstructure:"gemini_debug_response_headers"`
+	// GeminiDisconnectDrainEnabled: Gemini 生成请求在客户端断开后是否继续读完上游再计费（默认关闭）
+	GeminiDisconnectDrainEnabled bool `mapstructure:"gemini_disconnect_drain_enabled"`
+	// GeminiDisconnectDrainTimeoutSeconds: 客户端断开后继续读取上游的最长时间（秒），开启时必填 1-600
+	GeminiDisconnectDrainTimeoutSeconds int `mapstructure:"gemini_disconnect_drain_timeout_seconds"`
 	// GeminiCachedContentMaxTTLSeconds: Gemini 显式缓存单次可设置的最长有效期（秒），<=0 时按 86400 处理
 	GeminiCachedContentMaxTTLSeconds int `mapstructure:"gemini_cached_content_max_ttl_seconds"`
 	// ConnectionPoolIsolation: 上游连接池隔离策略（proxy/account/account_proxy）
@@ -2534,6 +2538,8 @@ func setDefaults() {
 	viper.SetDefault("gateway.models_list_read_max_bytes", DefaultModelsListReadMaxBytes)
 	viper.SetDefault("gateway.proxy_probe_response_read_max_bytes", int64(1024*1024))
 	viper.SetDefault("gateway.gemini_debug_response_headers", false)
+	viper.SetDefault("gateway.gemini_disconnect_drain_enabled", false)
+	viper.SetDefault("gateway.gemini_disconnect_drain_timeout_seconds", 0)
 	viper.SetDefault("gateway.gemini_cached_content_max_ttl_seconds", 86400)
 	viper.SetDefault("gateway.connection_pool_isolation", ConnectionPoolIsolationAccountProxy)
 	// HTTP 上游连接池配置（针对 5000+ 并发用户优化）
@@ -3370,6 +3376,12 @@ func (c *Config) Validate() error {
 	}
 	if c.Gateway.GrokResponseHeaderTimeout < 0 || c.Gateway.GrokResponseHeaderTimeout > 1800 {
 		return fmt.Errorf("gateway.grok_response_header_timeout must be between 0-1800 seconds")
+	}
+	if c.Gateway.GeminiDisconnectDrainTimeoutSeconds < 0 || c.Gateway.GeminiDisconnectDrainTimeoutSeconds > 600 {
+		return fmt.Errorf("gateway.gemini_disconnect_drain_timeout_seconds must be between 0-600 seconds")
+	}
+	if c.Gateway.GeminiDisconnectDrainEnabled && c.Gateway.GeminiDisconnectDrainTimeoutSeconds == 0 {
+		return fmt.Errorf("gateway.gemini_disconnect_drain_timeout_seconds is required (1-600 seconds) when gateway.gemini_disconnect_drain_enabled is true")
 	}
 	if c.Gateway.OpenAIFirstOutputTimeoutSeconds < 0 || c.Gateway.OpenAIFirstOutputTimeoutSeconds > 600 ||
 		(c.Gateway.OpenAIFirstOutputTimeoutSeconds > 0 && c.Gateway.OpenAIFirstOutputTimeoutSeconds < 30) {

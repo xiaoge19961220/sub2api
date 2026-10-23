@@ -713,13 +713,19 @@ func (s *GeminiMessagesCompatService) Forward(ctx context.Context, c *gin.Contex
 		return nil, fmt.Errorf("unsupported account type: %s", account.Type)
 	}
 
+	upstreamCtx, releaseUpstreamCtx := newGeminiDisconnectDrainContext(ctx, s.geminiDisconnectDrainTimeout(), account.ID)
+	defer releaseUpstreamCtx()
+
 	var resp *http.Response
 	// checkedPolicy 是循环内对当前 resp 的错误策略检查结果，未检查时为 nil。
 	var checkedPolicy *ErrorPolicyResult
 	signatureRetryStage := 0
 	for attempt := 1; attempt <= geminiMaxRetries; attempt++ {
 		checkedPolicy = nil
-		upstreamReq, idHeader, err := buildReq(ctx)
+		if attempt > 1 && ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		upstreamReq, idHeader, err := buildReq(upstreamCtx)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return nil, err
@@ -1265,12 +1271,22 @@ func (s *GeminiMessagesCompatService) ForwardNative(ctx context.Context, c *gin.
 		return nil, s.writeGoogleError(c, http.StatusBadGateway, "Unsupported account type: "+account.Type)
 	}
 
+	var drainTimeout time.Duration
+	if action != "countTokens" {
+		drainTimeout = s.geminiDisconnectDrainTimeout()
+	}
+	upstreamCtx, releaseUpstreamCtx := newGeminiDisconnectDrainContext(ctx, drainTimeout, account.ID)
+	defer releaseUpstreamCtx()
+
 	var resp *http.Response
 	// checkedPolicy 是循环内对当前 resp 的错误策略检查结果，未检查时为 nil。
 	var checkedPolicy *ErrorPolicyResult
 	for attempt := 1; attempt <= geminiMaxRetries; attempt++ {
 		checkedPolicy = nil
-		upstreamReq, idHeader, err := buildReq(ctx)
+		if attempt > 1 && ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		upstreamReq, idHeader, err := buildReq(upstreamCtx)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return nil, err
@@ -2458,7 +2474,7 @@ func (s *GeminiMessagesCompatService) handleStreamingResponse(c *gin.Context, re
 	})
 	flusher.Flush()
 
-	return &geminiStreamResult{usage: &usage, firstTokenMs: firstTokenMs}, nil
+	return &geminiStreamResult{usage: &usage, firstTokenMs: firstTokenMs, clientDisconnect: geminiClientGone(c), finished: finishReason != ""}, nil
 }
 
 func writeSSE(w io.Writer, event string, data any) {
@@ -2955,6 +2971,7 @@ func (s *GeminiMessagesCompatService) handleNativeStreamingResponse(c *gin.Conte
 	}
 
 	s.finalizeGeminiSSESignal(c, account, true, upstreamRequestID, best, sawDataEvent, fallback)
+	clientDisconnect = clientDisconnect || geminiClientGone(c)
 
 	return &geminiNativeStreamResult{usage: usage, firstTokenMs: firstTokenMs, clientDisconnect: clientDisconnect, finished: finished}, nil
 }

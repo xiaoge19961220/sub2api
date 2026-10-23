@@ -124,11 +124,17 @@ func (s *GeminiMessagesCompatService) forwardClaudeBodyAsChatCompletions(
 		useUpstreamStream,
 	)
 
+	upstreamCtx, releaseUpstreamCtx := newGeminiDisconnectDrainContext(ctx, s.geminiDisconnectDrainTimeout(), account.ID)
+	defer releaseUpstreamCtx()
+
 	var resp *http.Response
 	// checkedPolicy 是循环内对当前 resp 的错误策略检查结果，未检查时为 nil。
 	var checkedPolicy *ErrorPolicyResult
 	for attempt := 1; attempt <= geminiMaxRetries; attempt++ {
-		upstreamReq, idHeader, err := buildReq(ctx)
+		if attempt > 1 && ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		upstreamReq, idHeader, err := buildReq(upstreamCtx)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				return nil, err
@@ -545,18 +551,23 @@ func (s *GeminiMessagesCompatService) handleChatCompletionsStreamingResponseFrom
 	firstChunk := true
 	finishReason := ""
 	clientDisconnect := false
+	// 开启断开续读时，写失败后不再写下游但继续读上游，直到读完拿到完整用量。
+	drainOnDisconnect := s.geminiDisconnectDrainTimeout() > 0
 	streamResult := func() *geminiStreamResult {
-		return &geminiStreamResult{usage: &usage, firstTokenMs: firstTokenMs, clientDisconnect: clientDisconnect, finished: finishReason != ""}
+		return &geminiStreamResult{usage: &usage, firstTokenMs: firstTokenMs, clientDisconnect: clientDisconnect || geminiClientGone(c), finished: finishReason != ""}
 	}
 
 	writeChatChunk := func(chunk apicompat.ChatCompletionsChunk) bool {
+		if clientDisconnect {
+			return !drainOnDisconnect
+		}
 		sse, err := apicompat.ChatChunkToSSE(chunk)
 		if err != nil {
 			return false
 		}
 		if _, err := io.WriteString(c.Writer, sse); err != nil {
 			clientDisconnect = true
-			return true
+			return !drainOnDisconnect
 		}
 		return false
 	}
